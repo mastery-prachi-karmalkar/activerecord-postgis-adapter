@@ -7,17 +7,20 @@ module ActiveRecord  # :nodoc:
         # sql_type examples:
         #   "Geometry(Point,4326)"
         #   "Geography(Point,4326)"
-        def initialize(name, default, sql_type_metadata = nil, null = true,
-                       default_function = nil, collation: nil, comment: nil,
-                       serial: nil, spatial: nil)
+        # cast_type example classes:
+        #   OID::Spatial
+        #   OID::Integer
+        def initialize(name, default, sql_type_metadata = nil, null = true, table_name = nil,
+                       default_function = nil, collation = nil, comment = nil, cast_type = nil, opts = nil)
           @sql_type_metadata = sql_type_metadata
+          @cast_type = cast_type
           @geographic = !!(sql_type_metadata.sql_type =~ /geography\(/i)
-          if spatial
+          if opts
             # This case comes from an entry in the geometry_columns table
-            set_geometric_type_from_name(spatial[:type])
-            @srid = spatial[:srid].to_i
-            @has_z = !!spatial[:has_z]
-            @has_m = !!spatial[:has_m]
+            set_geometric_type_from_name(opts[:type])
+            @srid = opts[:srid].to_i
+            @has_z = !!opts[:has_z]
+            @has_m = !!opts[:has_m]
           elsif @geographic
             # Geographic type information is embedded in the SQL type
             @srid = 4326
@@ -30,13 +33,18 @@ module ActiveRecord  # :nodoc:
             # @geometric_type = geo_type_from_sql_type(sql_type)
             build_from_sql_type(sql_type_metadata.sql_type)
           end
-          super(name, default, sql_type_metadata, null, default_function,
-                collation: collation, comment: comment, serial: serial)
-          if spatial? && @srid
-            @limit = { srid: @srid, type: to_type_name(geometric_type) }
-            @limit[:has_z] = true if @has_z
-            @limit[:has_m] = true if @has_m
-            @limit[:geographic] = true if @geographic
+          if ActiveRecord::VERSION::MAJOR < 6
+            super(name, default, sql_type_metadata, null, table_name, default_function, collation, comment: comment)
+          else
+            super(name, default, sql_type_metadata, null, default_function, collection: collation, comment: comment)
+          end
+          if spatial?
+            if @srid
+              @limit = { srid: @srid, type: to_type_name(geometric_type) }
+              @limit[:has_z] = true if @has_z
+              @limit[:has_m] = true if @has_m
+              @limit[:geographic] = true if @geographic
+            end
           end
         end
 
@@ -51,11 +59,15 @@ module ActiveRecord  # :nodoc:
         alias :has_m? :has_m
 
         def limit
-          spatial? ? @limit : super
+          if spatial?
+            @limit
+          else
+            super
+          end
         end
 
         def spatial?
-          %i[geometry geography].include?(@sql_type_metadata.type)
+          @cast_type.respond_to?(:spatial?) && @cast_type.spatial?
         end
 
         private
@@ -65,16 +77,15 @@ module ActiveRecord  # :nodoc:
         end
 
         def build_from_sql_type(sql_type)
-          geo_type, @srid, @has_z, @has_m, @geographic = OID::Spatial.parse_sql_type(sql_type)
+          geo_type, @srid, @has_z, @has_m = OID::Spatial.parse_sql_type(sql_type)
           set_geometric_type_from_name(geo_type)
         end
 
         def to_type_name(geometric_type)
           name = geometric_type.type_name.underscore
-          case name
-          when "point"
+          if name == "point"
             "st_point"
-          when "polygon"
+          elsif name == "polygon"
             "st_polygon"
           else
             name
